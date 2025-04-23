@@ -112,6 +112,52 @@ class Extraction {
         return (nil, [nil])
     }
     
+    /// Extracts the signature timestamp (sts) from javascript. 
+    /// Used to pass into InnerTube to tell API what sig/player is in use.
+    /// - parameter js: The javascript contents of the watch page
+    /// - returns: The signature timestamp (sts) or nil if not found
+    class func extractSignatureTimestamp(fromJS js: String) -> Int? {
+        let pattern = NSRegularExpression(#"(?:signatureTimestamp|sts)\s*:\s*([0-9]{5})"#)
+        if let match = pattern.firstMatch(in: js, group: 1) {
+            return Int(match.content)
+        }
+        return nil
+    }
+    
+    struct YtCfg: Decodable {
+        let VISITOR_DATA: String?
+        let INNERTUBE_CONTEXT: Context?
+        
+        struct Context: Decodable {
+            let client: Client
+            
+            struct Client: Decodable {
+                let visitorData: String?
+                let userAgent: String?
+            }
+        }
+        
+        var visitorData: String? {
+            VISITOR_DATA ?? INNERTUBE_CONTEXT?.client.visitorData
+        }
+        
+        var userAgent: String? {
+            INNERTUBE_CONTEXT?.client.userAgent
+        }
+    }
+    
+    class func extractYtCfg(from html: String) throws -> YtCfg {
+        if #available(iOS 16.0, macOS 13.0, watchOS 9.0, tvOS 16.0, *) {
+            let regex = #/ytcfg\.set\s*\(\s*(?={)/#
+            let cfg = try parseForObject(YtCfg.self, html: html, precedingRegex: regex)
+            return cfg
+        } else {
+            let regex = NSRegularExpression(#"ytcfg\.set\s*\(\s*"#)
+            let cfg = try parseForObject(YtCfg.self, html: html, precedingRegex: regex)
+            return cfg
+        }
+    }
+    
     /// Parses input html to find the end of a JavaScript object.
     /// - parameter html: HTML to be parsed for an object.
     /// - parameter precedingRegex: Regex to find the string preceding the object.
@@ -121,6 +167,26 @@ class Extraction {
         
         for result in results {
             let startIndex = result.end
+            do {
+                return try parseForObjectFromStartpoint(type, html: html, startPoint: startIndex)
+            } catch {
+                
+            }
+        }
+        
+        throw YouTubeKitError.htmlParseError
+    }
+    
+    /// Parses input html to find the end of a JavaScript object.
+    /// - parameter html: HTML to be parsed for an object.
+    /// - parameter precedingRegex: Regex to find the string preceding the object.
+    /// - returns: A decodable object
+    @available(iOS 16.0, macOS 13.0, watchOS 9.0, tvOS 16.0, *)
+    class func parseForObject<T: Decodable>(_ type: T.Type, html: String, precedingRegex: Regex<Substring>) throws -> T {
+        let results = html.matches(of: precedingRegex)
+        
+        for result in results {
+            let startIndex = result.endIndex
             do {
                 return try parseForObjectFromStartpoint(type, html: html, startPoint: startIndex)
             } catch {
@@ -337,6 +403,16 @@ class Extraction {
         // Remove invalid streams
         for index in invalidStreamIndices.reversed() {
             streamManifest.remove(at: index)
+        }
+    }
+    
+    /// Filter out all audio streams that are not original language (i.e. dubbed)
+    class func filterOutDubbedAudio(streamManifest: [InnerTube.StreamingData.Format]) -> [InnerTube.StreamingData.Format] {
+        streamManifest.filter { stream in
+            if let audioTrack = stream.audioTrack {
+                return audioTrack.displayName.lowercased().hasSuffix("original")
+            }
+            return true
         }
     }
     
